@@ -1,0 +1,31 @@
+name: jp-earnings
+description: >-
+  English intelligence for Japanese corporate disclosures (EDINET): financial
+  statements and narrative in English via MCP
+startCommand:
+  type: stdio
+  configSchema:
+    type: object
+    required:
+      - EDINET_API_KEY
+    properties:
+      EDINET_API_KEY:
+        type: string
+        description: >-
+          Subscription-Key for the EDINET API v2. Get a free one at
+          https://api.edinet-fsa.go.jp/api/auth/index.aspx?mode=1
+      DEEPSEEK_API_KEY:
+        type: string
+        description: >-
+          Optional Deepseek API key used to translate narrative disclosure
+          sections into English. If omitted, narrative text is returned
+          untranslated in Japanese.
+  commandFunction: |-
+    (config) => ({
+      command: "python3",
+      args: ["server.py"],
+      env: {
+        EDINET_API_KEY: config.EDINET_API_KEY,
+        DEEPSEEK_API_KEY: config.DEEPSEEK_API_KEY || ""
+      }
+    })

@@ -1,0 +1,20 @@
+# Secrets — never commit API keys
+.env
+
+# Caches (regenerated at runtime — downloaded from EDINET mirror)
+.cache/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Internal build specs (not for public repo)
+SPEC.md
+SPEC2.md
+SPEC3.md
+
+# macOS
+.DS_Store
