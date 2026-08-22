@@ -11,6 +11,7 @@ Two independent pieces:
      Subscription-Key, read from the EDINET_API_KEY environment variable.
 """
 
+import base64
 import csv
 import io
 import os
@@ -20,10 +21,14 @@ import time
 import zipfile
 from datetime import date, timedelta
 from pathlib import Path
+from typing import Annotated
 
 import requests
 from lxml import etree, html
 from mcp.server.fastmcp import FastMCP
+from mcp.types import Icon, ToolAnnotations
+from pydantic import Field
+from typing_extensions import TypedDict
 
 
 def _load_dotenv() -> None:
@@ -540,34 +545,135 @@ def _translate_ja_to_en(text_ja: str, api_key: str):
 
 
 # --------------------------------------------------------------------------
+# Output schemas (TypedDicts -- FastMCP derives each tool's outputSchema
+# from these return-type annotations)
+# --------------------------------------------------------------------------
+
+
+class EdinetCodeResult(TypedDict):
+    ticker: str
+    edinet_code: str
+    company_name_ja: str
+    company_name_en: str
+    industry_ja: str
+    fiscal_year_end_ja: str
+    listing_status_ja: str
+
+
+class FigureDetail(TypedDict):
+    value: float | None
+    prior_year_value: float | None
+    yoy_change_pct: float | None
+
+
+class EarningsFigures(TypedDict):
+    revenue: FigureDetail
+    operating_income: FigureDetail
+    ordinary_income: FigureDetail
+    net_income: FigureDetail
+    eps: FigureDetail
+    dividend_per_share: FigureDetail
+    total_assets: FigureDetail
+    net_assets: FigureDetail
+
+
+class EarningsResult(TypedDict):
+    ticker: str
+    company_name: str
+    company_name_ja: str
+    edinet_code: str
+    document_type: str
+    document_id: str
+    period_end: str | None
+    filed_date: str | None
+    figures_currency: str
+    figures: EarningsFigures
+
+
+class NarrativeSection(TypedDict):
+    section_ja: str
+    section_en: str
+    text_ja: str
+    text_en: str | None
+
+
+class NarrativeResult(TypedDict):
+    ticker: str
+    company_name_en: str
+    document_id: str
+    fiscal_year_end: str | None
+    sections: list[NarrativeSection]
+
+
+# --------------------------------------------------------------------------
 # MCP server
 # --------------------------------------------------------------------------
+
+# Minimal, dependency-free server icon: a red circle with "JP", inlined as an
+# SVG data URL so no external image host is required.
+_SERVER_ICON_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">'
+    '<circle cx="32" cy="32" r="32" fill="#bc002d"/>'
+    '<text x="32" y="43" font-size="26" font-family="sans-serif" '
+    'text-anchor="middle" fill="white">JP</text>'
+    "</svg>"
+)
+SERVER_ICON = Icon(
+    src="data:image/svg+xml;base64," + base64.b64encode(_SERVER_ICON_SVG.encode()).decode(),
+    mimeType="image/svg+xml",
+    sizes=["any"],
+)
+
+READ_ONLY_ANNOTATIONS = ToolAnnotations(
+    readOnlyHint=True,
+    destructiveHint=False,
+    idempotentHint=True,
+    openWorldHint=True,
+)
 
 mcp = FastMCP(
     name="jp-earnings",
     instructions=(
-        "Look up English-language financial figures for Japanese companies "
-        "from their EDINET securities filings."
+        "Look up English-language financial figures and narrative disclosures "
+        "for Japanese companies from their EDINET securities filings "
+        "(有価証券報告書). Start with lookup_edinet_code to resolve a 4-digit "
+        "TSE ticker to its EDINET code, then use get_english_earnings for "
+        "financial statement figures or get_english_narrative for business "
+        "overview / risk / management policy sections."
     ),
+    website_url="https://github.com/jp-disclosures/jp-earnings",
+    icons=[SERVER_ICON],
 )
 
 
-@mcp.tool()
-def lookup_edinet_code(ticker: str) -> dict:
+@mcp.tool(
+    title="Look up EDINET code",
+    annotations=READ_ONLY_ANNOTATIONS,
+)
+def lookup_edinet_code(
+    ticker: Annotated[
+        str,
+        Field(description="4-digit Tokyo Stock Exchange securities code, e.g. '7203' for Toyota Motor."),
+    ],
+) -> EdinetCodeResult:
     """Resolve a 4-digit TSE ticker (e.g. '7203') to its EDINET code and
     company name. Does not require an EDINET API key."""
     return resolve_ticker(ticker)
 
 
-@mcp.tool()
-def get_english_earnings(ticker: str) -> dict:
+@mcp.tool(
+    title="Get English earnings figures",
+    annotations=READ_ONLY_ANNOTATIONS,
+)
+def get_english_earnings(
+    ticker: Annotated[
+        str,
+        Field(description="4-digit TSE securities code, e.g. '7203' for Toyota Motor."),
+    ],
+) -> EarningsResult:
     """Get the latest annual securities report (有価証券報告書) key
     financial figures for a Japanese ticker, translated to English field
-    names. Requires the EDINET_API_KEY environment variable to be set.
-
-    Args:
-        ticker: 4-digit TSE securities code, e.g. '7203' for Toyota Motor.
-    """
+    names. Requires the EDINET_API_KEY environment variable to be set."""
     api_key = get_edinet_api_key()  # fail fast with a clear message
     company = resolve_ticker(ticker)
     doc = find_latest_yuho(company["edinet_code"], company["fiscal_year_end_ja"], api_key)
@@ -589,18 +695,22 @@ def get_english_earnings(ticker: str) -> dict:
     }
 
 
-@mcp.tool()
-def get_english_narrative(ticker: str) -> dict:
+@mcp.tool(
+    title="Get English narrative disclosures",
+    annotations=READ_ONLY_ANNOTATIONS,
+)
+def get_english_narrative(
+    ticker: Annotated[
+        str,
+        Field(description="4-digit TSE securities code, e.g. '7203' for Toyota Motor."),
+    ],
+) -> NarrativeResult:
     """Get the latest annual securities report (有価証券報告書) narrative
     sections -- business overview / risk information / management policy --
     for a Japanese ticker, translated to English. Requires the
     EDINET_API_KEY environment variable. If DEEPSEEK_API_KEY is not set,
     translation is skipped and the untranslated Japanese text is returned
-    instead (graceful degradation, no error).
-
-    Args:
-        ticker: 4-digit TSE securities code, e.g. '7203' for Toyota Motor.
-    """
+    instead (graceful degradation, no error)."""
     api_key = get_edinet_api_key()  # fail fast with a clear message
     company = resolve_ticker(ticker)
     doc = find_latest_yuho(company["edinet_code"], company["fiscal_year_end_ja"], api_key)
@@ -678,5 +788,16 @@ def _selftest():
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "selftest":
         _selftest()
+    elif os.environ.get("MCP_TRANSPORT", "stdio").strip().lower() == "http":
+        mcp.settings.host = os.environ.get("MCP_HOST", "0.0.0.0")
+        mcp.settings.port = int(os.environ.get("MCP_PORT", "8000"))
+        # Behind a reverse proxy (Fly.io), the Host header is the public
+        # hostname (e.g. jp-earnings.fly.dev), not localhost. Disable FastMCP's
+        # default DNS-rebinding protection, which whitelists only localhost.
+        from mcp.server.transport_security import TransportSecuritySettings
+        mcp.settings.transport_security = TransportSecuritySettings(
+            enable_dns_rebinding_protection=False,
+        )
+        mcp.run(transport="streamable-http")
     else:
         mcp.run()

@@ -12,9 +12,7 @@ __pycache__/
 venv/
 
 # Internal build specs (not for public repo)
-SPEC.md
-SPEC2.md
-SPEC3.md
+SPEC*.md
 
 # macOS
 .DS_Store
